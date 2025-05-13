@@ -315,6 +315,7 @@ int bt_h4_vnd_setup(const struct device *dev, const struct bt_hci_setup_params *
 		}
 	}
 
+#if CONFIG_BT_HCI_HOST
 	/* Send HCI_RESET */
 	err = bt_hci_cmd_send_sync(BT_HCI_OP_RESET, NULL, NULL);
 	if (err) {
@@ -362,6 +363,9 @@ int bt_h4_vnd_setup(const struct device *dev, const struct bt_hci_setup_params *
 			return err;
 		}
 	}
+#else
+	(void)k_msleep(BT_STABILIZATION_DELAY_MS);
+#endif
 
 	/* Set public address if present */
 	public_addr = &params->public_addr;
