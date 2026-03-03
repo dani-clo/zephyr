@@ -593,6 +593,16 @@
 			reg = <0x64000000 0x808>;
 			status = "disabled";
 		};
+
+		rtc: rtc@40104000 {
+			compatible = "renesas,ra-rtc";
+			reg = <0x40104000 0x80>;
+			clocks = <&subclk>;
+			interrupts = <70 1>, <71 1>, <72 1>;
+			interrupt-names = "alm", "prd", "cup";
+			alarms-count = <1>;
+			status = "disabled";
+		};
 	};
 
 	usbfs_phy: usbfs-phy {
