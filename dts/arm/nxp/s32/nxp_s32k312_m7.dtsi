@@ -1,0 +1,139 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <arm/armv7-m.dtsi>
+#include <mem.h>
+#include <freq.h>
+#include <zephyr/dt-bindings/clock/nxp_s32k344_clock.h>
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+
+/ {
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-m7";
+			reg = <0>;
+			clock-frequency = <DT_FREQ_M(160)>;
+		};
+
+		mpu: mpu@e000ed90 {
+			compatible = "arm,armv7m-mpu";
+			reg = <0xe000ed90 0x40>;
+		};
+	};
+
+	pinctrl: pinctrl {
+		compatible = "nxp,s32k3-siul2-pinctrl";
+		status = "okay";
+	};
+
+	soc {
+		interrupt-parent = <&nvic>;
+
+		itcm: memory@0 {
+			compatible = "zephyr,memory-region", "arm,itcm";
+			reg = <0x00000000 DT_SIZE_K(32)>;
+			zephyr,memory-region = "ITCM";
+			zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_FLASH)>;
+		};
+
+		dtcm: memory@20000000 {
+			compatible = "zephyr,memory-region", "arm,dtcm";
+			reg = <0x20000000 DT_SIZE_K(64)>;
+			zephyr,memory-region = "DTCM";
+			zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM)>;
+		};
+
+		sram0: memory@20400000 {
+			compatible = "mmio-sram";
+			reg = <0x20400000 DT_SIZE_K(96)>;
+		};
+
+		c40fc: flash-controller@40268000 {
+			compatible = "nxp,c40-flash-controller";
+			reg = <0x40268000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0x0 0x00400000 DT_SIZE_K(2048)>;
+
+			flash0: flash@0 {
+				compatible = "nxp,c40-flash", "soc-nv-flash";
+				reg = <0x0 DT_SIZE_K(2048)>;
+				erase-block-size = <DT_SIZE_K(8)>;
+				write-block-size = <8>;
+				status = "disabled";
+			};
+		};
+
+		clock: clock-controller@402c8000 {
+			compatible = "nxp,s32-clock";
+			reg = <0x402c8000 0x4000>,
+			      <0x402cc000 0x4000>,
+			      <0x402d0000 0x4000>,
+			      <0x402d4000 0x4000>,
+			      <0x402d8000 0x4000>,
+			      <0x402e0000 0x4000>;
+			#clock-cells = <1>;
+			status = "okay";
+		};
+
+		siul2_0: siul2@40290000 {
+			reg = <0x40290000 0x10000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			eirq0: eirq@40290010 {
+				compatible = "nxp,siul2-eirq";
+				reg = <0x40290010 0xb4>;
+				#address-cells = <0>;
+				interrupts = <53 0>, <54 0>, <55 0>, <56 0>;
+				interrupt-controller;
+				#interrupt-cells = <2>;
+				status = "disabled";
+			};
+
+			gpioe_l: gpio@40291712 {
+				compatible = "nxp,siul2-gpio";
+				reg = <0x40291712 0x02>, <0x40290440 0x40>;
+				reg-names = "pgpdo", "mscr";
+				interrupt-parent = <&eirq0>;
+				interrupts = <0 0>, <1 1>, <2 2>, <3 3>,
+					     <4 4>, <5 5>, <6 6>, <8 7>,
+					     <9 8>, <10 9>, <11 10>, <12 11>,
+					     <13 12>, <14 13>, <15 14>;
+				nxp,wkpu = <&wkpu>;
+				nxp,wkpu-interrupts = <0 30>, <2 31>, <5 36>,
+					      <6 33>, <11 32>, <14 34>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <16>;
+				status = "disabled";
+			};
+		};
+
+		wkpu: wkpu@402b4000 {
+			compatible = "nxp,s32-wkpu";
+			reg = <0x402b4000 0x4000>;
+			interrupts = <83 0>;
+			status = "disabled";
+		};
+
+		lpuart2: uart@40330000 {
+			compatible = "nxp,lpuart";
+			reg = <0x40330000 0x4000>;
+			interrupts = <143 0>;
+			clocks = <&clock NXP_S32_LPUART2_CLK>;
+			status = "disabled";
+		};
+	};
+};
+
+&nvic {
+	arm,num-irq-priority-bits = <4>;
+};

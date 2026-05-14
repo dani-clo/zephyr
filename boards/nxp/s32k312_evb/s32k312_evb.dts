@@ -1,0 +1,75 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <freq.h>
+#include <arm/nxp/s32/nxp_s32k312_m7.dtsi>
+#include "s32k312_evb-pinctrl.dtsi"
+
+/ {
+	model = "NXP S32K312EVB-Q172";
+	compatible = "nxp,s32k312_evb";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &lpuart2;
+		zephyr,shell-uart = &lpuart2;
+		zephyr,uart-pipe = &lpuart2;
+	};
+
+	aliases {
+		led0 = &user_led0;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		user_led0: led_0 {
+			gpios = <&gpioe_l 14 GPIO_ACTIVE_LOW>;
+			label = "LED0";
+		};
+	};
+};
+
+&c40fc {
+	status = "okay";
+};
+
+&flash0 {
+	status = "okay";
+
+	/delete-node/ partitions;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		ivt_header: partition@0 {
+			label = "ivt-header";
+			reg = <0x00000000 0x100>;
+		};
+
+		code_partition: partition@100 {
+			label = "code-partition";
+			reg = <0x00000100 (DT_SIZE_K(2048) - 0x100)>;
+		};
+	};
+};
+
+&gpioe_l {
+	status = "okay";
+};
+
+&lpuart2 {
+	pinctrl-0 = <&lpuart2_default>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};

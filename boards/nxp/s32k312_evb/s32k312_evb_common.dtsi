@@ -1,0 +1,7 @@
+/*
+ * Copyright 2026 NXP
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <arm/nxp/s32/nxp_s32k312_m7.dtsi>

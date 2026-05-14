@@ -1,0 +1,18 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+identifier: s32k312_evb
+name: NXP S32K312EVB-Q172
+vendor: nxp
+type: mcu
+arch: arm
+ram: 96
+flash: 2048
+toolchain:
+  - zephyr
+supported:
+  - flash
+  - gpio
+  - mpu
+  - pinctrl
+  - uart

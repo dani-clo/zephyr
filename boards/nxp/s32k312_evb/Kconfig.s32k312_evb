@@ -1,0 +1,6 @@
+# Copyright 2026 NXP
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_S32K312_EVB
+	select SOC_S32K312
+	select SOC_PART_NUMBER_PS32K312EHVPBS
