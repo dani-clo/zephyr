@@ -247,7 +247,18 @@ class ZephyrElf:
         self._object_find_named('__devicedeps_', _on_ordinal)
 
         # Find all device structs
+        # Some drivers emit helper objects named with a '__device_' prefix that
+        # are not actual struct device instances. Keep only symbols large enough
+        # to contain the pointer fields this parser reads.
+        _, native_size = self.native_struct_format
+        min_device_size = 0
+        for key in ['_DEVICE_STRUCT_HANDLES_OFFSET', '_DEVICE_STRUCT_PM_OFFSET']:
+            if key in self.ld_consts:
+                min_device_size = max(min_device_size, self.ld_consts[key] + native_size)
+
         def _on_device(sym):
+            if min_device_size and sym.entry.st_size < min_device_size:
+                return
             self.devices.append(Device(self, sym))
 
         self._object_find_named('__device_', _on_device)
