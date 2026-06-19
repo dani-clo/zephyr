@@ -12,9 +12,26 @@
 #include <zephyr/init.h>
 #include <soc.h>
 #include <zephyr/arch/cpu.h>
+#include <stm32_ll_bus.h>
+#include <stm32_ll_pwr.h>
 #include <stm32_ll_system.h>
 #include <stm32_ll_bus.h>
 #include <stm32_ll_pwr.h>
+
+#if __has_include(<stm32_ll_dbgmcu.h>)
+#include <stm32_ll_dbgmcu.h>
+#elif __has_include(<stm32h7xx_ll_dbgmcu.h>)
+#include <stm32h7xx_ll_dbgmcu.h>
+#else
+static inline void LL_DBGMCU_EnableTraceClock(void)
+{
+}
+
+static inline void LL_DBGMCU_SetTracePinAssignment(uint32_t pin_assignment)
+{
+	ARG_UNUSED(pin_assignment);
+}
+#endif
 
 /**
  * @brief Perform SoC configuration at boot.
