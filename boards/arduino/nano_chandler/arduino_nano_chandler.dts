@@ -122,7 +122,7 @@
 		xosc-xtal-en = <1>;
 		xosc-auto-gain-control-loop-en = <0>;
 		xosc-clock-switch-back-en = <0>;
-		xosc-frequency = <16000000>;
+		xosc-frequency = <12000000>;
 		xosc-on-demand-en = <0>;
 		xosc-startup-time = <500000>;
 		xosc-clock-failure-detection-en = <0>;
@@ -173,7 +173,7 @@
 			pll-on-demand-en = <0>;
 			pll-bandwidth-sel = "bwsel-1";
 			pll-src = "xosc";
-			pll-ref-division-factor = <4>;
+			pll-ref-division-factor = <3>;
 			pll-feedback-divider-factor = <240>;
 			pll-freq-division-factor-int = <0>;
 			pll-freq-division-factor-rem = <0>;
@@ -396,7 +396,7 @@
 };
 
 zephyr_udc0: &hsusb0 {
-	status = "disabled";
+	status = "okay";
 };
 
 &gmac {
@@ -510,3 +510,4 @@ zephyr_udc0: &hsusb0 {
 	};
 };
 
+#include <../boards/common/usb/cdc_acm_serial.dtsi>
