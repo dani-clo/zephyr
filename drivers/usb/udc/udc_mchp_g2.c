@@ -40,6 +40,8 @@ LOG_MODULE_REGISTER(udc_mchp_g2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 /* EP0 constants */
 #define MCHP_G2_EP0_MPS           64U /* Control EP max packet size */
 #define MCHP_G2_SETUP_PACKET_SIZE 8U  /* SETUP packet length */
+/* Control OUT data can span multiple EP0 packets (e.g. DFU wLength=512). */
+#define MCHP_G2_EP0_CTRL_STAGING_SIZE 1024U
 
 /* SETUP packet field offsets: bmRequestType in word0[7:0], wLength in word1[31:16]. */
 #define MCHP_G2_SETUP_BMREQTYPE_MASK 0xFFU
@@ -121,7 +123,7 @@ struct udc_mchp_g2_data {
 	atomic_t bulk_rx_nak;     /* RxPktRdy held; data in sw buf */
 	atomic_t bulk_rx_pending; /* RxPktRdy held; data in HW FIFO */
 
-	uint8_t ep0_rx_staging[MCHP_G2_EP0_MPS];
+	uint8_t ep0_rx_staging[MCHP_G2_EP0_CTRL_STAGING_SIZE];
 	uint16_t ep0_rx_staging_len;
 	uint16_t ep0_ctrl_write_len;
 	uint16_t ep0_ctrl_bytes_received;
