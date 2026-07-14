@@ -21,7 +21,7 @@
 	chosen {
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash1;
-		zephyr,code-partition = &code_partition;
+		zephyr,code-partition = &slot0_partition;
 		zephyr,console = &sercom1;
 		zephyr,shell-uart = &sercom1;
 		zephyr,canbus = &can0;
@@ -96,14 +96,14 @@
 					#address-cells = <1>;
 					#size-cells = <1>;
 
-					code_partition: partition@0 {
-						label = "loader";
-						reg = <0x0 DT_SIZE_K(816)>;
+					boot_partition: partition@0 {
+						label = "bootloader";
+						reg = <0x0 DT_SIZE_K(256)>;
 					};
 
-					user_sketch: partition@cc000 {
-						label = "user_sketch";
-						reg = <0xcc000 DT_SIZE_K(208)>;
+					slot0_partition: partition@40000 {
+						label = "image-0";
+						reg = <0x40000 DT_SIZE_K(768)>;
 					};
 				};
 			};
@@ -419,9 +419,9 @@ zephyr_udc0: &hsusb0 {
 &gmac {
 	pinctrl-0 = <&gmac_rmii>;
 	pinctrl-names = "default";
-	/* zephyr,random-mac-address; */
-	nvmem-cells = <&mac_address>;
-	nvmem-cell-names = "mac-address";
+	zephyr,random-mac-address;
+	/* nvmem-cells = <&mac_address>;
+	nvmem-cell-names = "mac-address"; */
 	phy-handle = <&eth_phy>;
 	status = "okay";
 };
