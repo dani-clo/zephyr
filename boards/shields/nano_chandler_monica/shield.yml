@@ -1,0 +1,6 @@
+shields:
+  - name: nano_chandler_monica
+    full_name: Arduino Nano Chandler Monica
+    vendor: arduino
+    supported_features:
+      - wifi
