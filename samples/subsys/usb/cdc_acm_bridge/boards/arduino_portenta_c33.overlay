@@ -41,12 +41,27 @@
 	};
 };
 
-/* ESP UART becomes a plain bridge peer: no BT HCI, no hardware flow control. */
+/* ESP UART becomes a plain bridge peer: no BT HCI, no hardware flow control.
+ * The ESP32-C3 ROM bootloader expects 115200 on its UART during download.
+ */
 &uart8 {
+	current-speed = <115200>;
 	/delete-property/ hw-flow-control;
 };
 
 &bt_hci_uart {
+	status = "disabled";
+};
+
+/* The sample does not use the main I2C buses; disabling them avoids the RA IIC
+ * driver instantiating with a clock-frequency above the controller's supported
+ * max-bitrate in the base Portenta C33 DTS.
+ */
+&iic0 {
+	status = "disabled";
+};
+
+&iic1 {
 	status = "disabled";
 };
 
