@@ -140,14 +140,14 @@ typedef struct uart_mchp_dev_data {
 	struct uart_config config_cache;
 
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	/* TXC resets to zero even though no transmission is pending. */
+	bool tx_started;
+
 	/* IRQ callback function */
 	uart_irq_callback_user_data_t cb;
 
 	/* IRQ callback user data */
 	void *cb_data;
-
-	/* Cached status of TX completion */
-	bool is_tx_completed_cache;
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 
 #ifdef CONFIG_UART_MCHP_ASYNC
@@ -604,6 +604,25 @@ static inline void uart_tx_char(sercom_registers_t *regs, bool is_clock_external
 	usart->SERCOM_DATA = data;
 }
 
+/* Track actual DATA writes, not IRQ enable/disable or FIFO availability. */
+static void uart_mchp_write_char(const struct device *dev, unsigned char ch)
+{
+	const uart_mchp_dev_cfg_t *const cfg = dev->config;
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	uart_mchp_dev_data_t *const dev_data = dev->data;
+	unsigned int key = irq_lock();
+
+	/* Publish the state and clear the previous TXC through the DATA write
+	 * atomically with respect to irq_tx_complete(), including console TX.
+	 */
+	dev_data->tx_started = true;
+#endif
+	uart_tx_char(cfg->regs, cfg->is_clock_external, ch);
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	irq_unlock(key);
+#endif
+}
+
 /**
  * @brief Check if there is a buffer overflow error.
  *
@@ -812,6 +831,7 @@ static void uart_enable_rx_interrupt(sercom_registers_t *regs, bool is_clock_ext
 	}
 }
 
+#ifdef CONFIG_UART_MCHP_ASYNC
 /**
  * @brief Enable or disable the UART TX complete interrupt.
  *
@@ -832,6 +852,7 @@ static void uart_enable_tx_complete_interrupt(sercom_registers_t *regs, bool is_
 		usart->SERCOM_INTENCLR = SERCOM_USART_INTENCLR_TXC_Msk;
 	}
 }
+#endif
 
 /**
  * @brief Enable or disable the UART error interrupt.
@@ -853,6 +874,7 @@ static void uart_enable_err_interrupt(sercom_registers_t *regs, bool is_clock_ex
 	}
 }
 
+#ifdef CONFIG_UART_MCHP_ASYNC
 /**
  * @brief Clear all UART interrupts.
  *
@@ -870,7 +892,6 @@ static void uart_clear_interrupts(sercom_registers_t *regs, bool is_clock_extern
 				 SERCOM_USART_INTFLAG_TXC_Msk);
 }
 
-#ifdef CONFIG_UART_MCHP_ASYNC
 /**
  * @brief Get the UART DATA register address.
  *
@@ -1342,7 +1363,7 @@ static void uart_mchp_poll_out(const struct device *dev, unsigned char data)
 	}
 
 	/* send a character */
-	uart_tx_char(regs, is_clock_external, data);
+	uart_mchp_write_char(dev, data);
 }
 
 /**
@@ -1356,11 +1377,13 @@ static int uart_mchp_err_check(const struct device *dev)
 	const uart_mchp_dev_cfg_t *const cfg = dev->config;
 	sercom_registers_t *regs = cfg->regs;
 	bool is_clock_external = cfg->is_clock_external;
+	sercom_usart_registers_t *usart = UART_GET_BASE_ADDR(regs, is_clock_external);
 
 	uint32_t err = uart_get_err(dev);
 
 	/* Clear all errors */
 	uart_err_clear_all(regs, is_clock_external);
+	usart->SERCOM_INTFLAG = SERCOM_USART_INTFLAG_ERROR_Msk;
 
 	return err;
 }
@@ -1390,7 +1413,7 @@ static void uart_enable_tx_ready_interrupt(sercom_registers_t *regs, bool is_clo
 /**
  * @brief Enable UART TX interrupt.
  *
- * This function enables the UART TX ready and TX complete interrupts.
+ * Enable DRE to request more data. TXC is polled without clearing it.
  *
  * @param dev Pointer to the device structure.
  */
@@ -1402,7 +1425,6 @@ static void uart_mchp_irq_tx_enable(const struct device *dev)
 	unsigned int key = irq_lock();
 
 	uart_enable_tx_ready_interrupt(regs, is_clock_external, true);
-	uart_enable_tx_complete_interrupt(regs, is_clock_external, true);
 	irq_unlock(key);
 }
 
@@ -1424,8 +1446,7 @@ static int uart_mchp_fifo_fill(const struct device *dev, const uint8_t *tx_data,
 	int retval = 0;
 
 	if ((uart_is_tx_ready(regs, is_clock_external) == true) && (len >= 1)) {
-		uart_tx_char(regs, is_clock_external,
-			     tx_data[0]); /* Transmit the first character */
+		uart_mchp_write_char(dev, tx_data[0]);
 		retval = 1;
 	}
 
@@ -1435,7 +1456,7 @@ static int uart_mchp_fifo_fill(const struct device *dev, const uint8_t *tx_data,
 /**
  * @brief Disable UART TX interrupt.
  *
- * This function disables the UART TX ready and TX complete interrupts.
+ * Disable the UART TX ready interrupt without changing completion status.
  *
  * @param dev Pointer to the device structure.
  */
@@ -1445,10 +1466,7 @@ static void uart_mchp_irq_tx_disable(const struct device *dev)
 	sercom_registers_t *regs = cfg->regs;
 	bool is_clock_external = cfg->is_clock_external;
 
-	/* Keep the TX complete interrupt enabled so the HW can signal when the
-	 * final byte has actually left the shift register. Disabling both TX ready
-	 * and TX complete here can cause flush() loops to wait forever.
-	 */
+	/* Masking DRE does not stop the transmitter or clear TXC. */
 	uart_enable_tx_ready_interrupt(regs, is_clock_external, false);
 }
 
@@ -1482,16 +1500,18 @@ static int uart_mchp_irq_tx_complete(const struct device *dev)
 {
 	const uart_mchp_dev_cfg_t *const cfg = dev->config;
 	uart_mchp_dev_data_t *const dev_data = dev->data;
-	int retval = 0;
+	unsigned int key = irq_lock();
+	int complete;
 
-	if (dev_data->is_tx_completed_cache == true) {
-		retval = 1;
-	} else if (uart_is_tx_complete(cfg->regs, cfg->is_clock_external) == true) {
-		dev_data->is_tx_completed_cache = true;
-		retval = 1;
-	}
-
-	return retval;
+	/* An untouched transmitter is idle even though TXC resets to zero.
+	 * After the first DATA write, only TXC proves the final stop bit is out;
+	 * DRE alone also becomes set while the shift register is still busy.
+	 * Do not reset tx_started in configure() or on an RX interrupt.
+	 */
+	complete = !dev_data->tx_started ||
+		   uart_is_tx_complete(cfg->regs, cfg->is_clock_external);
+	irq_unlock(key);
+	return complete;
 }
 
 /**
@@ -1551,7 +1571,6 @@ static int uart_mchp_irq_rx_ready(const struct device *dev)
  * @param rx_data Pointer to the buffer to store received data.
  * @param size Size of the buffer.
  * @return Number of bytes read from the FIFO.
- * @retval -EINVAL for invalid argument.
  */
 static int uart_mchp_fifo_read(const struct device *dev, uint8_t *rx_data, const int size)
 {
@@ -1560,18 +1579,12 @@ static int uart_mchp_fifo_read(const struct device *dev, uint8_t *rx_data, const
 	bool is_clock_external = cfg->is_clock_external;
 	int retval = 0;
 
-	if (uart_is_rx_complete(regs, is_clock_external) == true) {
-		uint8_t ch = uart_get_received_char(
-			/* Get the received character */
-			regs, is_clock_external);
-
-		if (size >= 1) {
-			/* Store the received character in the buffer */
-			*rx_data = ch;
-			retval = 1;
-		} else {
-			retval = -EINVAL;
-		}
+	/* A short read must mean that all currently available data was drained.
+	 * Check the requested size before touching DATA: even a discarded read
+	 * removes a character from the hardware receive buffer.
+	 */
+	while ((retval < size) && uart_is_rx_complete(regs, is_clock_external)) {
+		rx_data[retval++] = uart_get_received_char(regs, is_clock_external);
 	}
 
 	return retval;
@@ -1628,27 +1641,19 @@ static void uart_mchp_irq_err_disable(const struct device *dev)
 /**
  * @brief Update UART interrupt status.
  *
- * This function clears sticky interrupts and updates the TX complete cache.
+ * Status is read directly by the IRQ query functions.
  *
  * @param dev Pointer to the device structure.
  * @return Always returns 1.
  */
 static int uart_mchp_irq_update(const struct device *dev)
 {
-	/* Clear sticky interrupts */
-	const uart_mchp_dev_cfg_t *const cfg = dev->config;
-	uart_mchp_dev_data_t *const dev_data = dev->data;
-	sercom_registers_t *regs = cfg->regs;
-	bool is_clock_external = cfg->is_clock_external;
+	ARG_UNUSED(dev);
 
-	/*
-	 * Cache the TXC flag, and use this cached value to clear the interrupt
-	 * if we do not use the cached value, there is a chance TXC will set
-	 * after caching...this will cause TXC to never be cached.
+	/* RXC is cleared by draining DATA, DRE by writing DATA or masking its
+	 * interrupt, and errors by err_check(). Leave TXC latched until the next
+	 * DATA write, including when an RX interrupt follows TX completion.
 	 */
-	dev_data->is_tx_completed_cache = uart_is_tx_complete(regs, is_clock_external);
-	uart_clear_interrupts(regs, is_clock_external);
-
 	return 1;
 }
 
