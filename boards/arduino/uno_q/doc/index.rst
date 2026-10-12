@@ -25,6 +25,26 @@ Supported Features
 
 .. zephyr:board-supported-hw::
 
+CAN and USB
+===========
+
+FDCAN1 uses PB8 (D9) for RX and PB9 (D10) for TX, with PLL1 Q as its
+kernel clock source. An external CAN transceiver is required. These pins
+cannot be used for GPIO, SPI chip select or PWM while CAN is active.
+
+The STM32 USB full-speed controller uses PA11 (D5, USB D-) and PA12
+(D4, USB D+). A USB connection must be wired to these pins.
+
+For :ref:`external_module_cannectivity`, ``counter0`` is a 32-bit TIM2
+counter running at 1 MHz. An application overlay can reference it through
+the CANnectivity node's ``timestamp-counter`` property and use ``fdcan1``
+as its CAN controller.
+
+When integrating with the Arduino sketch loader, its variant overlay must
+preserve this CAN pin mapping and TIM2 prescaler, and disable TIM2 PWM.
+PWM on D5, D9 and D10 must also be excluded because USB and CAN reserve
+these pins. SPI2 must use software chip select because PB9 is CAN TX.
+
 Programming and debugging
 *************************
 

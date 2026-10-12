@@ -21,5 +21,6 @@ supported:
   - counter
   - i2c
   - rtc
-# - usbd # enable usbotg_fs in DTS
+  - can
+  - usbd
 vendor: arduino
