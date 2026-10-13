@@ -1,0 +1,16 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&mac {
+	zephyr,deferred-init;
+};
+
+&mdio {
+	zephyr,deferred-init;
+};
+
+&eth_phy {
+	zephyr,deferred-init;
+};

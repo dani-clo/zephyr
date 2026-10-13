@@ -19,6 +19,91 @@ Requirements
 Building and Running
 ********************
 
+Validating deferred Ethernet initialization on Portenta H7
+========================================================
+
+Use the M7 target, an Ethernet connector/carrier connected to a network with a
+DHCP server, and a 3.3 V UART adapter on USART1 (PA9 TX, PA10 RX, common ground).
+The validation overlay selects USART1 for the console and shell at 115200 baud,
+8N1. The PHY uses the board's 25 MHz crystal; no PWM reference clock is needed.
+These builds use the Zephyr board configuration, not the Arduino core overlay.
+
+Build the normal initialization variant from the Zephyr repository root:
+
+.. code-block:: console
+
+   west build -b arduino_portenta_h7/stm32h747xx/m7 \
+     -d build/portenta-h7-eth-normal samples/net/dhcpv4_client -- \
+     -DEXTRA_CONF_FILE=boards/portenta_h7_validation.conf \
+     -DDTC_OVERLAY_FILE=boards/portenta_h7_validation.overlay
+
+Build the deferred variant using the same configuration plus a second overlay:
+
+.. code-block:: console
+
+   west build -b arduino_portenta_h7/stm32h747xx/m7 \
+     -d build/portenta-h7-eth-deferred samples/net/dhcpv4_client -- \
+     -DEXTRA_CONF_FILE=boards/portenta_h7_validation.conf \
+     '-DDTC_OVERLAY_FILE=boards/portenta_h7_validation.overlay;boards/portenta_h7_deferred.overlay'
+
+Double-tap reset to enter the Arduino bootloader, then flash one variant:
+
+.. code-block:: console
+
+   west flash -d build/portenta-h7-eth-normal
+
+Repeat for ``build/portenta-h7-eth-deferred``. The board revision defaults to
+``1.0.0``; select the appropriate revision in the board target if needed.
+
+The STM32-specific preparation in this sample prints device readiness before
+and after initialization. In the normal build, MDIO, PHY and MAC should already
+report ``ready=1`` when ``main()`` starts. In the deferred build they should all
+report ``ready=0`` first. The sample waits five seconds, initializes MDIO, PHY
+and MAC in that order, checks each return value, and explicitly calls
+``net_if_up()`` before starting DHCP. ``device_init()`` does not initialize
+dependencies or bring the network interface up automatically.
+
+For both builds, check that:
+
+* No HAL initialization errors, PHY readiness errors or assertions occur.
+* The PHY reports link up and DHCP prints an address, netmask and router.
+* ``ping <assigned-address>`` succeeds from a host on the same network.
+* The shell's ``net iface`` shows the expected MAC address and interface state.
+* Unplugging and reconnecting Ethernet restores the link and ping responses.
+
+Test both with the cable connected before reset and with the cable connected
+after initialization. For an additional comparison with only the MAC deferred,
+remove the MDIO and PHY properties from a copy of the deferred overlay: those
+devices should then report ``ready=1`` before the five-second delay.
+
+The two configurations are also registered as Twister scenarios. To build both:
+
+.. code-block:: console
+
+   ./scripts/twister -T samples/net/dhcpv4_client \
+     -p arduino_portenta_h7/stm32h747xx/m7 \
+     -s sample.net.dhcpv4_client.portenta_h7.normal \
+     -s sample.net.dhcpv4_client.portenta_h7.deferred \
+     --build-only -O twister-out-portenta-eth
+
+For runtime validation, run one scenario at a time with the UART adapter and
+Ethernet connected, entering the bootloader before each run. For example:
+
+.. code-block:: console
+
+   ./scripts/twister -T samples/net/dhcpv4_client \
+     -p arduino_portenta_h7/stm32h747xx/m7 \
+     -s sample.net.dhcpv4_client.portenta_h7.deferred \
+     --device-testing --device-serial /dev/ttyUSB0 \
+     --device-serial-baud 115200 --west-flash \
+     -O twister-out-portenta-eth-device
+
+Replace the serial device with the UART adapter's path. The console harness
+checks the initial readiness of all three devices, completion of MAC
+initialization, and DHCP address assignment. The deferred scenario also checks
+the delay marker. These checks require physical hardware and a DHCP server;
+``--build-only`` does not validate Ethernet traffic.
+
 Running DHCPv4 client in Linux Host
 ===================================
 

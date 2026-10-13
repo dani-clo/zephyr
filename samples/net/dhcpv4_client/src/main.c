@@ -11,6 +11,8 @@
 LOG_MODULE_REGISTER(net_dhcpv4_client_sample, LOG_LEVEL_DBG);
 
 #include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/linker/sections.h>
 #include <errno.h>
 #include <stdio.h>
@@ -19,6 +21,54 @@ LOG_MODULE_REGISTER(net_dhcpv4_client_sample, LOG_LEVEL_DBG);
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/net_mgmt.h>
+
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32_ethernet)
+#define STM32_ETH_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(st_stm32_ethernet)
+#define STM32_PHY_NODE DT_PHANDLE(STM32_ETH_NODE, phy_handle)
+
+static int prepare_stm32_ethernet(void)
+{
+	const struct device *const devices[] = {
+		DEVICE_DT_GET(DT_BUS(STM32_PHY_NODE)),
+		DEVICE_DT_GET(STM32_PHY_NODE),
+		DEVICE_DT_GET(STM32_ETH_NODE),
+	};
+	struct net_if *iface;
+	int ret;
+
+	for (size_t i = 0; i < ARRAY_SIZE(devices); i++) {
+		LOG_INF("Before init: %s ready=%d", devices[i]->name,
+			device_is_ready(devices[i]));
+	}
+
+	if (DT_PROP_OR(STM32_ETH_NODE, zephyr_deferred_init, false)) {
+		LOG_INF("Waiting 5 seconds before Ethernet device initialization");
+		k_sleep(K_SECONDS(5));
+	}
+
+	/* device_init() does not initialize dependencies automatically. */
+	for (size_t i = 0; i < ARRAY_SIZE(devices); i++) {
+		if (!device_is_ready(devices[i])) {
+			ret = device_init(devices[i]);
+			if (ret < 0) {
+				LOG_ERR("Cannot initialize %s: %d", devices[i]->name, ret);
+				return ret;
+			}
+		}
+		LOG_INF("After init: %s ready=%d", devices[i]->name,
+			device_is_ready(devices[i]));
+	}
+
+	iface = net_if_lookup_by_dev(devices[ARRAY_SIZE(devices) - 1]);
+	if (iface == NULL) {
+		return -ENODEV;
+	}
+
+	/* A deferred interface is not automatically brought up after device_init(). */
+	ret = net_if_up(iface);
+	return ret == -EALREADY ? 0 : ret;
+}
+#endif
 
 #define DHCP_OPTION_NTP (42)
 
@@ -86,6 +136,15 @@ static void option_handler(struct net_dhcpv4_option_callback *cb,
 int main(void)
 {
 	LOG_INF("Run dhcpv4 client");
+
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32_ethernet)
+	int ret = prepare_stm32_ethernet();
+
+	if (ret < 0) {
+		LOG_ERR("Ethernet preparation failed: %d", ret);
+		return ret;
+	}
+#endif
 
 	net_mgmt_init_event_callback(&mgmt_cb, handler,
 				     NET_EVENT_IPV4_ADDR_ADD);

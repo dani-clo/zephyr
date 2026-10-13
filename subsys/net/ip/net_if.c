@@ -452,7 +452,9 @@ static inline void init_iface(struct net_if *iface)
 
 	NET_ASSERT(dev != NULL);
 
-	if (!device_is_ready(dev)) {
+	/* Deferred drivers can prepare their interface before initializing the hardware. */
+	if (!device_is_ready(dev) &&
+	    (((dev->flags & DEVICE_FLAG_INIT_DEFERRED) == 0U) || dev->state->initialized)) {
 		NET_ERR("Iface %p device not ready", iface);
 		return;
 	}
