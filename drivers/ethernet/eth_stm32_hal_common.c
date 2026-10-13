@@ -106,6 +106,8 @@ void HAL_ETH_RxCpltCallback(ETH_HandleTypeDef *heth_handle)
 	k_sem_give(&dev_data->rx_int_sem);
 }
 
+static void eth_runtime_init(const struct device *dev);
+
 static int eth_initialize(const struct device *dev)
 {
 	struct eth_stm32_hal_dev_data *dev_data = dev->data;
@@ -176,43 +178,21 @@ static int eth_initialize(const struct device *dev)
 		dev_data->mac_addr[2], dev_data->mac_addr[3],
 		dev_data->mac_addr[4], dev_data->mac_addr[5]);
 
+	dev_data->hw_initialized = true;
+	eth_runtime_init(dev);
+
 	return 0;
 }
 
 #if defined(CONFIG_ETH_STM32_MULTICAST_FILTER)
-void eth_stm32_mcast_filter(const struct device *dev, const struct ethernet_filter *filter)
+static void eth_stm32_apply_mcast_filter(struct eth_stm32_hal_dev_data *dev_data)
 {
-	struct eth_stm32_hal_dev_data *dev_data = (struct eth_stm32_hal_dev_data *)dev->data;
 	ETH_HandleTypeDef *heth = &dev_data->heth;
-	uint32_t crc;
-	uint32_t hash_table[2];
-	uint32_t hash_index;
+	uint32_t hash_table[2] = {0};
 
-	crc = __RBIT(crc32_ieee(filter->mac_address.addr, sizeof(struct net_eth_addr)));
-	hash_index = (crc >> 26) & 0x3f;
-
-	__ASSERT_NO_MSG(hash_index < ARRAY_SIZE(dev_data->hash_index_cnt));
-
-#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_ethernet)
-	hash_table[0] = heth->Instance->MACHT0R;
-	hash_table[1] = heth->Instance->MACHT1R;
-#else
-	hash_table[0] = heth->Instance->MACHTLR;
-	hash_table[1] = heth->Instance->MACHTHR;
-#endif /* DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_ethernet) */
-
-	if (filter->set) {
-		dev_data->hash_index_cnt[hash_index]++;
-		hash_table[hash_index / 32] |= (1 << (hash_index % 32));
-	} else {
-		if (dev_data->hash_index_cnt[hash_index] == 0) {
-			__ASSERT_NO_MSG(false);
-			return;
-		}
-
-		dev_data->hash_index_cnt[hash_index]--;
-		if (dev_data->hash_index_cnt[hash_index] == 0) {
-			hash_table[hash_index / 32] &= ~(1 << (hash_index % 32));
+	for (size_t i = 0; i < ARRAY_SIZE(dev_data->hash_index_cnt); i++) {
+		if (dev_data->hash_index_cnt[i] != 0) {
+			hash_table[i / 32] |= BIT(i % 32);
 		}
 	}
 
@@ -222,7 +202,34 @@ void eth_stm32_mcast_filter(const struct device *dev, const struct ethernet_filt
 #else
 	heth->Instance->MACHTLR = hash_table[0];
 	heth->Instance->MACHTHR = hash_table[1];
-#endif /* DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_ethernet) */
+#endif
+}
+
+void eth_stm32_mcast_filter(const struct device *dev, const struct ethernet_filter *filter)
+{
+	struct eth_stm32_hal_dev_data *dev_data = (struct eth_stm32_hal_dev_data *)dev->data;
+	uint32_t crc;
+	uint32_t hash_index;
+
+	crc = __RBIT(crc32_ieee(filter->mac_address.addr, sizeof(struct net_eth_addr)));
+	hash_index = (crc >> 26) & 0x3f;
+
+	__ASSERT_NO_MSG(hash_index < ARRAY_SIZE(dev_data->hash_index_cnt));
+
+	if (filter->set) {
+		dev_data->hash_index_cnt[hash_index]++;
+	} else {
+		if (dev_data->hash_index_cnt[hash_index] == 0) {
+			__ASSERT_NO_MSG(false);
+			return;
+		}
+
+		dev_data->hash_index_cnt[hash_index]--;
+	}
+
+	if (dev_data->hw_initialized) {
+		eth_stm32_apply_mcast_filter(dev_data);
+	}
 }
 
 #endif /* CONFIG_ETH_STM32_MULTICAST_FILTER */
@@ -248,33 +255,30 @@ static void phy_link_state_changed(const struct device *phy_dev, struct phy_link
 	}
 }
 
-static void eth_iface_init(struct net_if *iface)
+static void eth_runtime_init(const struct device *dev)
 {
-	const struct device *dev = net_if_get_device(iface);
 	struct eth_stm32_hal_dev_data *dev_data = dev->data;
 	const struct eth_stm32_hal_dev_cfg *cfg = dev->config;
 	ETH_HandleTypeDef *heth = &dev_data->heth;
+	struct net_if *iface = dev_data->iface;
 
-	dev_data->iface = iface;
+	if (!dev_data->hw_initialized || !dev_data->iface_initialized ||
+	    dev_data->runtime_initialized) {
+		return;
+	}
+
+	dev_data->runtime_initialized = true;
 
 	/* Register Ethernet MAC Address with the upper layer */
 	net_if_set_link_addr(iface, dev_data->mac_addr,
 			     sizeof(dev_data->mac_addr),
 			     NET_LINK_ETHERNET);
 
-	ethernet_init(iface);
-
 	eth_stm32_setup_mac_filter(heth);
 
-	net_if_carrier_off(iface);
-
-	net_lldp_set_lldpdu(iface);
-
-	if (device_is_ready(eth_stm32_phy_dev)) {
-		phy_link_callback_set(eth_stm32_phy_dev, phy_link_state_changed, (void *)dev);
-	} else {
-		LOG_ERR("PHY device not ready");
-	}
+#if defined(CONFIG_ETH_STM32_MULTICAST_FILTER)
+	eth_stm32_apply_mcast_filter(dev_data);
+#endif
 
 	/* Now that the iface is setup, we are safe to enable IRQs. */
 	__ASSERT_NO_MSG(cfg->config_func != NULL);
@@ -290,6 +294,26 @@ static void eth_iface_init(struct net_if *iface)
 			0, K_NO_WAIT);
 
 	k_thread_name_set(&dev_data->rx_thread, "stm_eth");
+
+	/* Register last: the PHY can invoke the callback synchronously. */
+	if (device_is_ready(eth_stm32_phy_dev)) {
+		phy_link_callback_set(eth_stm32_phy_dev, phy_link_state_changed, (void *)dev);
+	} else {
+		LOG_ERR("PHY device not ready");
+	}
+}
+
+static void eth_iface_init(struct net_if *iface)
+{
+	const struct device *dev = net_if_get_device(iface);
+	struct eth_stm32_hal_dev_data *dev_data = dev->data;
+
+	dev_data->iface = iface;
+	ethernet_init(iface);
+	net_if_carrier_off(iface);
+	net_lldp_set_lldpdu(iface);
+	dev_data->iface_initialized = true;
+	eth_runtime_init(dev);
 }
 
 static enum ethernet_hw_caps eth_stm32_hal_get_capabilities(const struct device *dev)

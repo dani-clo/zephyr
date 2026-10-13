@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* Use Serial1 (USART1) for logs and the network shell. */
+/ {
+	chosen {
+		zephyr,console = &usart1;
+		zephyr,shell-uart = &usart1;
+	};
+};
+
+&usart1 {
+	status = "okay";
+};

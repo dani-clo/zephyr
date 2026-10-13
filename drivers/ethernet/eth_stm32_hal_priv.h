@@ -119,6 +119,9 @@ struct eth_stm32_hal_dev_cfg {
 /* Device run time data */
 struct eth_stm32_hal_dev_data {
 	struct net_if *iface;
+	bool hw_initialized;
+	bool iface_initialized;
+	bool runtime_initialized;
 	uint8_t mac_addr[6];
 	ETH_HandleTypeDef heth;
 	struct k_sem rx_int_sem;
