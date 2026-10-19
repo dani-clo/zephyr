@@ -9,6 +9,7 @@
 #include <errno.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/cache.h>
 #include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/video.h>
@@ -24,8 +25,8 @@
 
 LOG_MODULE_REGISTER(video_stm32_dcmi, CONFIG_VIDEO_LOG_LEVEL);
 
-#if CONFIG_VIDEO_BUFFER_POOL_NUM_MAX < 2
-#error "The minimum required number of buffers for video_stm32 is 2"
+#if CONFIG_VIDEO_BUFFER_POOL_NUM_MAX < 1
+#error "The minimum required number of buffers for video_stm32 is 1"
 #endif
 
 typedef void (*irq_config_func_t)(const struct device *dev);
@@ -42,6 +43,7 @@ struct video_stm32_dcmi_data {
 	DCMI_HandleTypeDef hdcmi;
 	struct video_format fmt;
 	int capture_rate;
+	bool streaming;
 	struct k_fifo fifo_in;
 	struct k_fifo fifo_out;
 	struct video_buffer *vbuf;
@@ -55,10 +57,49 @@ struct video_stm32_dcmi_config {
 	const struct device *sensor_dev;
 };
 
+static HAL_StatusTypeDef dcmi_start_dma(struct video_stm32_dcmi_data *data)
+{
+	struct video_buffer *vbuf = data->vbuf;
+	HAL_StatusTypeDef ret;
+	unsigned int key;
+
+	/* Reset CT as well as the FIFO when restarting a segmented frame. */
+	ret = HAL_DMA_Init(data->hdcmi.DMA_Handle);
+	if (ret != HAL_OK) {
+		return ret;
+	}
+
+	sys_cache_data_flush_and_invd_range(vbuf->buffer, vbuf->bytesused);
+	key = irq_lock();
+	/* Snapshot completion disables these interrupts in the HAL. */
+	__HAL_DCMI_DISABLE_IT(&data->hdcmi, DCMI_IT_LINE | DCMI_IT_VSYNC);
+	__HAL_DCMI_CLEAR_FLAG(&data->hdcmi,
+		DCMI_FLAG_FRAMERI | DCMI_FLAG_OVRRI | DCMI_FLAG_ERRRI);
+	data->hdcmi.ErrorCode = HAL_DCMI_ERROR_NONE;
+	__HAL_DCMI_ENABLE_IT(&data->hdcmi, DCMI_IT_ERR | DCMI_IT_OVR);
+	ret = HAL_DCMI_Start_DMA(&data->hdcmi, DCMI_MODE_SNAPSHOT,
+				 (uint32_t)vbuf->buffer, vbuf->bytesused / 4);
+#if defined(DMA_IT_FE)
+	/*
+	 * Match the single-buffer HAL path: a peripheral-to-memory FIFO stall
+	 * is backpressure, not lost pixels. MultiBufferStart_IT enables FEIE
+	 * unnecessarily; real data loss is reported by the DCMI overrun IRQ.
+	 */
+	__HAL_DMA_DISABLE_IT(data->hdcmi.DMA_Handle, DMA_IT_FE);
+#endif
+	irq_unlock(key);
+
+	return ret;
+}
+
 static void stm32_dcmi_process_dma_error(DCMI_HandleTypeDef *hdcmi)
 {
 	struct video_stm32_dcmi_data *dev_data =
 		CONTAINER_OF(hdcmi, struct video_stm32_dcmi_data, hdcmi);
+
+	if (!dev_data->streaming || dev_data->vbuf == NULL) {
+		return;
+	}
 
 	LOG_DBG("Restart DMA after Error!");
 
@@ -68,11 +109,8 @@ static void stm32_dcmi_process_dma_error(DCMI_HandleTypeDef *hdcmi)
 		return;
 	}
 
-	if (HAL_DCMI_Start_DMA(&dev_data->hdcmi,
-			       DCMI_MODE_CONTINUOUS,
-			       (uint32_t)dev_data->vbuf->buffer,
-			       dev_data->vbuf->size / 4) != HAL_OK) {
-		LOG_WRN("Continuous: HAL_DCMI_Start_DMA FAILED!");
+	if (dcmi_start_dma(dev_data) != HAL_OK) {
+		LOG_WRN("HAL_DCMI_Start_DMA FAILED!");
 		return;
 	}
 }
@@ -84,29 +122,43 @@ void HAL_DCMI_ErrorCallback(DCMI_HandleTypeDef *hdcmi)
 
 void HAL_DCMI_FrameEventCallback(DCMI_HandleTypeDef *hdcmi)
 {
-	struct video_stm32_dcmi_data *dev_data =
-			CONTAINER_OF(hdcmi, struct video_stm32_dcmi_data, hdcmi);
-	struct video_buffer *vbuf;
-	HAL_StatusTypeDef __maybe_unused hal_ret;
+	struct video_stm32_dcmi_data *data =
+		CONTAINER_OF(hdcmi, struct video_stm32_dcmi_data, hdcmi);
+	struct video_buffer *next;
+	struct video_buffer *done;
 
-	hal_ret = HAL_DCMI_Suspend(hdcmi);
-	__ASSERT_NO_MSG(hal_ret == HAL_OK);
-
-	vbuf = k_fifo_get(&dev_data->fifo_in, K_NO_WAIT);
-
-	if (vbuf == NULL) {
-		LOG_DBG("Failed to get buffer from fifo");
-		goto resume;
+	if (!data->streaming || data->vbuf == NULL) {
+		return;
 	}
 
-	vbuf->timestamp = k_uptime_get_32();
-	memcpy(vbuf->buffer, dev_data->vbuf->buffer, vbuf->bytesused);
+	next = k_fifo_get(&data->fifo_in, K_NO_WAIT);
 
-	k_fifo_put(&dev_data->fifo_out, vbuf);
+	/*
+	 * Stop before handing the completed buffer to the application. The HAL
+	 * may split a frame across multiple DMA segments, so changing just M0AR
+	 * or M1AR does not switch the destination of the complete frame.
+	 */
+	if (HAL_DCMI_Stop(hdcmi) != HAL_OK) {
+		if (next != NULL) {
+			k_fifo_put(&data->fifo_in, next);
+		}
+		LOG_ERR("Failed to stop DCMI at frame boundary");
+		return;
+	}
 
-resume:
-	hal_ret = HAL_DCMI_Resume(hdcmi);
-	__ASSERT_NO_MSG(hal_ret == HAL_OK);
+	done = data->vbuf;
+	/* Pause until enqueue supplies the next buffer. */
+	data->vbuf = next;
+	done->timestamp = k_uptime_get_32();
+	sys_cache_data_invd_range(done->buffer, done->bytesused);
+
+	if (next != NULL && dcmi_start_dma(data) != HAL_OK) {
+		k_fifo_put(&data->fifo_in, next);
+		data->vbuf = NULL;
+		LOG_ERR("Failed to restart DCMI at frame boundary");
+	}
+
+	k_fifo_put(&data->fifo_out, done);
 }
 
 static void stm32_dcmi_isr(const struct device *dev)
@@ -183,7 +235,7 @@ static int stm32_dma_init(const struct device *dev)
 	hdma.Init.MemInc		= DMA_MINC_ENABLE;
 	hdma.Init.PeriphDataAlignment	= DMA_PDATAALIGN_WORD;
 	hdma.Init.MemDataAlignment	= DMA_MDATAALIGN_WORD;
-	hdma.Init.Mode			= DMA_CIRCULAR;
+	hdma.Init.Mode			= DMA_NORMAL;
 	hdma.Init.Priority		= DMA_PRIORITY_HIGH;
 	hdma.Instance			= STM32_DMA_GET_INSTANCE(dma->reg, dma->channel);
 #if defined(CONFIG_SOC_SERIES_STM32F7X) || defined(CONFIG_SOC_SERIES_STM32H7X)
@@ -277,20 +329,29 @@ static int video_stm32_dcmi_set_stream(const struct device *dev, bool enable,
 	int err;
 
 	if (!enable) {
-		err = video_stream_stop(config->sensor_dev, type);
-		if (err < 0) {
-			return err;
-		}
-
+		data->streaming = false;
+		/* Stop DCMI before the sensor truncates the current frame. */
 		hal_ret = HAL_DCMI_Stop(&data->hdcmi);
 		if (hal_ret != HAL_OK) {
 			LOG_ERR("Failed to stop DCMI");
 			return -EIO;
 		}
 
-		/* Release the video buffer allocated when start streaming */
-		k_fifo_put(&data->fifo_in, data->vbuf);
+		err = video_stream_stop(config->sensor_dev, type);
+		if (err < 0) {
+			return err;
+		}
 
+		/* Release the video buffer allocated when start streaming */
+		if (data->vbuf != NULL) {
+			k_fifo_put(&data->fifo_in, data->vbuf);
+			data->vbuf = NULL;
+		}
+
+		return 0;
+	}
+
+	if (data->streaming) {
 		return 0;
 	}
 
@@ -305,9 +366,12 @@ static int video_stm32_dcmi_set_stream(const struct device *dev, bool enable,
 	data->hdcmi.Instance->CR &= ~(DCMI_CR_FCRC_0 | DCMI_CR_FCRC_1);
 	data->hdcmi.Instance->CR |= STM32_DCMI_GET_CAPTURE_RATE(data->capture_rate);
 
-	hal_ret = HAL_DCMI_Start_DMA(&data->hdcmi, DCMI_MODE_CONTINUOUS,
-				     (uint32_t)data->vbuf->buffer, data->vbuf->bytesused / 4);
+	data->streaming = true;
+	hal_ret = dcmi_start_dma(data);
 	if (hal_ret != HAL_OK) {
+		data->streaming = false;
+		k_fifo_put(&data->fifo_in, data->vbuf);
+		data->vbuf = NULL;
 		LOG_ERR("Failed to start DCMI DMA");
 		return -EIO;
 	}
@@ -319,6 +383,7 @@ static int video_stm32_dcmi_enqueue(const struct device *dev, struct video_buffe
 {
 	struct video_stm32_dcmi_data *data = dev->data;
 	const uint32_t buffer_size = data->fmt.pitch * data->fmt.height;
+	unsigned int key;
 
 	if (buffer_size > vbuf->size) {
 		return -EINVAL;
@@ -327,7 +392,18 @@ static int video_stm32_dcmi_enqueue(const struct device *dev, struct video_buffe
 	vbuf->bytesused = buffer_size;
 	vbuf->line_offset = 0;
 
+	key = irq_lock();
 	k_fifo_put(&data->fifo_in, vbuf);
+	if (data->streaming && data->vbuf == NULL) {
+		data->vbuf = k_fifo_get(&data->fifo_in, K_NO_WAIT);
+		if (dcmi_start_dma(data) != HAL_OK) {
+			k_fifo_put(&data->fifo_in, data->vbuf);
+			data->vbuf = NULL;
+			irq_unlock(key);
+			return -EIO;
+		}
+	}
+	irq_unlock(key);
 
 	return 0;
 }
@@ -349,8 +425,8 @@ static int video_stm32_dcmi_get_caps(const struct device *dev, struct video_caps
 {
 	const struct video_stm32_dcmi_config *config = dev->config;
 
-	/* 2 buffers are needed for DCMI_MODE_CONTINUOUS */
-	caps->min_vbuf_count = 2;
+	/* Capture pauses when every buffer belongs to the application. */
+	caps->min_vbuf_count = 1;
 
 	/* Forward the message to the sensor device */
 	return video_get_caps(config->sensor_dev, caps);
