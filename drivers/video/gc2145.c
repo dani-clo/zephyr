@@ -26,6 +26,11 @@ LOG_MODULE_REGISTER(video_gc2145, CONFIG_VIDEO_LOG_LEVEL);
 #define GC2145_REG16_LE(addr)	((addr) | VIDEO_REG_ADDR8_DATA16_LE)
 #define GC2145_REG16_BE(addr)	((addr) | VIDEO_REG_ADDR8_DATA16_BE)
 
+#define GC2145_REG_PLL_MODE2            GC2145_REG8(0xf8)
+#define GC2145_PLL_DIGITAL_DIV_ENABLE   BIT(7)
+#define GC2145_REG_CLOCK_DIV_MODE       GC2145_REG8(0xfa)
+#define GC2145_CLOCK_DIV2               0x11
+
 #define GC2145_REG_AMODE1               GC2145_REG8(0x17)
 #define GC2145_REG_AMODE1_DEF           0x14
 #define GC2145_REG_AMODE1_UPDOWN	BIT(1)
@@ -1399,6 +1404,24 @@ static int gc2145_init(const struct device *dev)
 	ret = video_write_cci_multiregs8(&cfg->i2c, default_regs, ARRAY_SIZE(default_regs));
 	if (ret < 0) {
 		return ret;
+	}
+
+	if (cfg->bus_type == VIDEO_BUS_TYPE_PARALLEL) {
+		ret = video_write_cci_reg(&cfg->i2c, GC2145_REG_PLL_MODE2,
+					GC2145_PLL_DIGITAL_DIV_ENABLE |
+					CONFIG_VIDEO_GC2145_DVP_PLL_MULTIPLIER);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	if (cfg->bus_type == VIDEO_BUS_TYPE_PARALLEL &&
+	    IS_ENABLED(CONFIG_VIDEO_GC2145_DVP_CLOCK_DIV2)) {
+		ret = video_write_cci_reg(&cfg->i2c, GC2145_REG_CLOCK_DIV_MODE,
+					GC2145_CLOCK_DIV2);
+		if (ret < 0) {
+			return ret;
+		}
 	}
 
 	ret = gc2145_set_fmt(dev, &fmt);

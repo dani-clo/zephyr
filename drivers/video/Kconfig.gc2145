@@ -8,3 +8,22 @@ config VIDEO_GC2145
 	default y
 	help
 	  Enable driver for GC2145 CMOS digital image sensor device.
+
+config VIDEO_GC2145_DVP_PLL_MULTIPLIER
+	int "GC2145 parallel-output PLL multiplier field"
+	depends on VIDEO_GC2145
+	range 1 63
+	default 5
+	help
+	  DIVX4 field in PLL mode register 0xf8 for the parallel interface.
+	  Lower values reduce the sensor pixel clock and frame rate, allowing
+	  capture into external memory shared with a display controller.
+	  The CSI interface retains its own clock configuration.
+
+config VIDEO_GC2145_DVP_CLOCK_DIV2
+	bool "Divide the GC2145 parallel-output clock by two"
+	depends on VIDEO_GC2145
+	help
+	  Enable the digital clock divider in register 0xfa for the parallel
+	  interface. This reduces peak DMA traffic without changing XCLK or
+	  the PLL input frequency. The CSI configuration is unchanged.
