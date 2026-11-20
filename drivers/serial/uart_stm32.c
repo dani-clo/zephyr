@@ -307,16 +307,29 @@ static inline int uart_stm32_set_baudrate(const struct device *dev, uint32_t bau
 		__ASSERT(stm32_reg_read(&usart->BRR) < 0x000FFFFFU, "BaudRateReg < 0xFFFF");
 	} else {
 #endif /* HAS_LPUART */
-		uint32_t usartdiv = STM32_USART_DIV_SAMPLING16(clock_rate,
+		uint32_t usartdiv;
 #ifdef USART_PRESC_PRESCALER
-							       LL_USART_PRESCALER_DIV1,
+		uint32_t prescaler;
+
+		for (prescaler = LL_USART_PRESCALER_DIV1;
+		     prescaler <= LL_USART_PRESCALER_DIV256; prescaler++) {
+			usartdiv = STM32_USART_DIV_SAMPLING16(clock_rate, prescaler, baud_rate);
+			if (usartdiv <= UINT16_MAX) {
+				break;
+			}
+		}
+#else
+		usartdiv = STM32_USART_DIV_SAMPLING16(clock_rate, baud_rate);
 #endif
-							       baud_rate);
 		/* BRR holds USARTDIV in 16 bits */
 		if (usartdiv < 16 || usartdiv > UINT16_MAX) {
 			LOG_ERR("Unable to set %s to %d", dev->name, baud_rate);
 			return -EINVAL;
 		}
+
+#ifdef USART_PRESC_PRESCALER
+		LL_USART_SetPrescaler(usart, prescaler);
+#endif
 
 #ifdef USART_CR1_OVER8
 		LL_USART_SetOverSampling(usart,
@@ -326,7 +339,7 @@ static inline int uart_stm32_set_baudrate(const struct device *dev, uint32_t bau
 		LL_USART_SetBaudRate(usart,
 				     clock_rate,
 #ifdef USART_PRESC_PRESCALER
-				     LL_USART_PRESCALER_DIV1,
+				     prescaler,
 #endif
 #ifdef USART_CR1_OVER8
 				     LL_USART_OVERSAMPLING_16,
